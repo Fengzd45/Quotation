@@ -1,0 +1,45 @@
+name: Hourly Auto Parse & Update Nursery DB
+
+on:
+  schedule:
+    # 每天北京时间早上 10:00（UTC时间 2:00）自动拉取一次邮件
+    - cron: '0 2 * * *'
+  workflow_dispatch: # 允许网页端手动一键点击触发
+
+jobs:
+  parse-and-db:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies for PaddleOCR
+      # PaddleOCR 图像处理需要这两个底层 Linux 系统包支持
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-glx libgomp1
+
+    - name: Install Python Dependencies
+      run: |
+        pip install --upgrade pip
+        pip install paddlepaddle paddleocr pdfplumber pandas openpyxl
+
+    - name: Run Auto Mail Parser
+      env:
+        GMAIL_USER: ${{ secrets.GMAIL_USER }}
+        GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
+      run: python mail_to_db_pipeline.py
+
+    - name: Commit and Push Database Update
+      run: |
+        git config --global user.name "GitHub Action Bot"
+        git config --global user.email "action@github.com"
+        git add nursery_quotes.db || true
+        git diff-index --quiet HEAD || git commit -m "Auto-import quotes to database [skip ci]"
+        git push || echo "No new database changes to push."
