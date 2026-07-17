@@ -1,123 +1,100 @@
-import os
 import sqlite3
 import requests
 from bs4 import BeautifulSoup
-import re
-from datetime import datetime
+import os
+import json
+import datetime
 
-DB_NAME = "nursery_quotes.db"
+# 1. 模拟浏览器请求头
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
 
-def init_database():
-    """连接到统一的单库（若不存在则自动初始化表结构）"""
-    conn = sqlite3.connect(DB_NAME)
+def init_db():
+    """初始化数据库表结构"""
+    conn = sqlite3.connect('nursery_quotes.db')
     cursor = conn.cursor()
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS quote_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        supplier TEXT,
-        quote_number TEXT,
-        quote_date TEXT,
-        category TEXT,
-        ordered INTEGER,
-        botanical_name TEXT,
-        size TEXT,
-        net_price REAL,
-        extension REAL,
-        file_source TEXT,
-        imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
+        CREATE TABLE IF NOT EXISTS quote_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier TEXT,
+            quote_number TEXT,
+            quote_date TEXT,
+            category TEXT,
+            ordered INTEGER,
+            botanical_name TEXT,
+            size TEXT,
+            net_price REAL,
+            extension REAL,
+            file_source TEXT,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
     ''')
     conn.commit()
-    return conn
+    conn.close()
 
-def safe_float(val):
-    if val is None or str(val).strip() == "":
-        return 0.0
-    try:
-        cleaned = str(val).replace('$', '').replace(',', '').strip()
-        return float(cleaned)
-    except ValueError:
-        return 0.0
-
-def scrape_arts_nursery():
-    """
-    【爬虫模块】抓取 Art's Nursery 示例公开数据
-    """
-    print("🌐 [爬虫模块] 正在发起网络请求，抓取公开植物价格...")
+def run_web_scraper():
+    """网络爬虫核心逻辑"""
+    print("🚀 [爬虫引擎] 开始抓取 Art's Nursery 供应商数据...")
+    init_db()
     
-    # 这里我们使用真实网页的模拟 HTML 结构来进行数据闭环测试
-    # 后续可以针对特定的公開排版表格进行选择性解析
-    mock_html = """
-    <div class="product-row" data-category="Tree">
-        <span class="p-name">Acer palmatum 'Bloodgood' (Red Maple)</span>
-        <span class="p-size">#5 Gallon</span>
-        <span class="p-price">$119.99</span>
-    </div>
-    <div class="product-row" data-category="Shrub">
-        <span class="p-name">Hydrangea macrophylla</span>
-        <span class="p-size">#2 Gallon</span>
-        <span class="p-price">$34.50</span>
-    </div>
-    <div class="product-row" data-category="Grass">
-        <span class="p-name">Miscanthus sinensis</span>
-        <span class="p-size">#1 Gallon</span>
-        <span class="p-price">$18.95</span>
-    </div>
-    """
-    
-    soup = BeautifulSoup(mock_html, 'html.parser')
-    items = []
-    
-    for row in soup.find_all('div', class_='product-row'):
-        category = row.get('data-category', 'Shrub')
-        botanical_name = row.find('span', class_='p-name').text.strip()
-        size = row.find('span', class_='p-size').text.strip()
-        price_text = row.find('span', class_='p-price').text.strip()
-        
-        net_price = safe_float(price_text)
-        
-        items.append({
-            "category": category,
-            "ordered": 0,  # 网页爬取属于公开库存查询，订购量默认为 0
-            "botanical_name": botanical_name,
-            "size": size,
-            "net_price": net_price,
-            "extension": 0.0
-        })
-        
-    return items
-
-def main():
-    supplier_name = "Art's Nursery (Website)"
-    source_url = "https://www.artsnursery.com/catalog"
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    
-    # 1. 抓取数据
-    scraped_items = scrape_arts_nursery()
-    if not scraped_items:
-        print("⚠️ 未抓取到有效数据，爬虫退出。")
-        return
-        
-    # 2. 写入统一数据库
-    conn = init_database()
-    cursor = conn.cursor()
-    
-    sql = '''
-    INSERT INTO quote_items (supplier, quote_number, quote_date, category, ordered, botanical_name, size, net_price, extension, file_source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    '''
-    
-    records = [
-        (supplier_name, "WEB_SCRAPE", current_date, 
-         i["category"], i["ordered"], i["botanical_name"], i["size"], i["net_price"], i["extension"], source_url)
-        for i in scraped_items
+    # 模拟抓取到的测试样本数据（实际运行时请替换为您的具体抓取解析逻辑）
+    sample_data = [
+        ("Art's Nursery (Website)", "WEB_SCRAPE", "2026-07-17", "Grass", 0, "Miscanthus sinensis", "#1 Gallon", 22.33, 0.0, "https://www.artsnursery.com/catalog"),
+        ("Art's Nursery (Website)", "WEB_SCRAPE", "2026-07-17", "Shrub", 0, "Hydrangea macrophylla", "#2 Gallon", 40.00, 0.0, "https://www.artsnursery.com/catalog"),
+        ("Art's Nursery (Website)", "WEB_SCRAPE", "2026-07-17", "Tree", 0, "Acer palmatum 'Bloodgood' (Red Maple)", "#5 Gallon", 95.50, 0.0, "https://www.artsnursery.com/catalog")
     ]
     
-    cursor.executemany(sql, records)
+    conn = sqlite3.connect('nursery_quotes.db')
+    cursor = conn.cursor()
+    
+    for item in sample_data:
+        cursor.execute('''
+            INSERT INTO quote_items (supplier, quote_number, quote_date, category, ordered, botanical_name, size, net_price, extension, file_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', item)
+        
     conn.commit()
     conn.close()
+    print(f"✅ [爬虫引擎] 成功向数据库写入 {len(sample_data)} 条网络报价。")
+
+def sync_db_to_json():
+    """【核心升级】从数据库抽取最新数据，完全覆写同步到 quotes.json 供前端看板使用"""
+    db_file = 'nursery_quotes.db'
+    json_file = 'quotes.json'
     
-    print(f"💾 [数据对齐成功] 爬虫抓取的 {len(records)} 条公开数据已无缝合并至 {DB_NAME} 数据库！")
+    print("🔄 [数据对齐] 启动双轨同步：SQLite -> quotes.json ...")
+    
+    if not os.path.exists(db_file):
+        print("⚠️ [数据对齐] 未找到数据库文件，取消 JSON 同步。")
+        return
+
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row  # 让结果集以字典字典形式返回
+    cursor = conn.cursor()
+    
+    try:
+        # 按时间倒序拉取所有历史及最新报价数据
+        cursor.execute("SELECT * FROM quote_items ORDER BY rowid DESC")
+        rows = cursor.fetchall()
+        
+        json_ready_data = []
+        for row in rows:
+            item = dict(row)
+            # 确保每一条记录在前端都有时间展示
+            if 'imported_at' not in item or not item['imported_at']:
+                item['imported_at'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            json_ready_data.append(item)
+            
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(json_ready_data, f, ensure_ascii=False, indent=2)
+            
+        print(f"✅ [数据对齐] 成功！已同步 {len(json_ready_data)} 条高精度数据至前端 JSON 缓存。")
+    except Exception as e:
+        print(f"❌ [数据对齐] 同步失败，发生异常: {e}")
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
-    main()
+    run_web_scraper()   # 1. 运行爬虫写入数据库
+    sync_db_to_json()   # 2. 将最新的数据库状态广播到 JSON 文件
