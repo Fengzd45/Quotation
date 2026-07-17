@@ -1,0 +1,36 @@
+name: Daily Auto Web Scraper
+
+on:
+  schedule:
+    # 每天北京时间晚上 23:00（UTC时间 15:00）自动运行爬虫
+    - cron: '0 15 * * *'
+  workflow_dispatch: # 支持手动点击触发
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Scraper Dependencies
+      run: |
+        pip install --upgrade pip
+        pip install requests beautifulsoup4
+
+    - name: Execute Web Scraper
+      run: python web_scraper_pipeline.py
+
+    - name: Commit and Push Database Update
+      run: |
+        git config --global user.name "GitHub Action Bot"
+        git config --global user.email "action@github.com"
+        git add nursery_quotes.db || true
+        git diff-index --quiet HEAD || git commit -m "Auto-commit web scraped data [skip ci]"
+        git push || echo "No new database changes from scraper."
