@@ -1,13 +1,18 @@
-name: Daily Auto Web Scraper
+name: Auto Scrape Web & Update Nursery DB
 
 on:
   schedule:
-    # 每天北京时间晚上 23:00（UTC时间 15:00）自动运行爬虫
-    - cron: '0 15 * * *'
-  workflow_dispatch: # 支持手动点击触发
+    # 每天北京时间中午 12:00（UTC时间 4:00）自动爬取网页
+    - cron: '0 4 * * *'
+  workflow_dispatch: # 允许网页端手动一键点击触发
+
+# 🔐 添加防锁冲突控制：使用相同的 group 名字，确保与邮件解析排队隔离
+concurrency:
+  group: db-update-group
+  cancel-in-progress: false
 
 jobs:
-  run-scraper:
+  scrape-and-db:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,12 +24,12 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install Scraper Dependencies
+    - name: Install Python Dependencies
       run: |
         pip install --upgrade pip
-        pip install requests beautifulsoup4
+        pip install pandas requests beautifulsoup4 openpyxl
 
-    - name: Execute Web Scraper
+    - name: Run Web Scraper
       run: python web_scraper_pipeline.py
 
     - name: Commit and Push Database Update
@@ -32,5 +37,5 @@ jobs:
         git config --global user.name "GitHub Action Bot"
         git config --global user.email "action@github.com"
         git add nursery_quotes.db || true
-        git diff-index --quiet HEAD || git commit -m "Auto-commit web scraped data [skip ci]"
-        git push || echo "No new database changes from scraper."
+        git diff-index --quiet HEAD || git commit -m "Auto-scrape web to database [skip ci]"
+        git push || echo "No new database changes to push."
