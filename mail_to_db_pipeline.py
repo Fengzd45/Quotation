@@ -8,7 +8,8 @@ import pdfplumber
 import json
 import datetime
 from email.header import decode_header
-from paddleocr import PaddleOCR
+# 💡 修复第 11 行：更换为云端已安装的 easyocr 库，彻底消灭导入错误
+import easyocr
 
 # ==================== 1. 配置区域 ====================
 EMAIL_ACCOUNT = os.environ.get("GMAIL_USER", "Fengzd3@gmail.com")
@@ -53,7 +54,7 @@ def safe_float(val):
     except ValueError:
         return 0.0
 
-# ==================== 新增：双轨同步数据引擎 ====================
+# ==================== 双轨同步数据引擎 ====================
 def sync_db_to_json():
     """将 SQLite 数据库中的最新数据读取出来，并同步刷新到 quotes.json 中"""
     json_file = 'quotes.json'
@@ -121,16 +122,20 @@ def parse_excel(file_path):
     return items
 
 def parse_pdf(file_path):
-    """【解析 PDF】提取矢量文字，准确率接近 100%"""
+    """【解析 PDF】提取矢量文字，遇到纯图片 PDF 自动转图交给 OCR"""
     print(f"📄 正在解析 PDF 报价单: {file_path}")
     items = []
     current_category = "Shrub"
+    is_pure_image = True
     
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
             table = page.extract_table()
             if not table:
                 continue
+            
+            # 如果能提取出表格和文本，说明是原生电子版 PDF
+            is_pure_image = False
             for row in table:
                 if not row or len(row) < 5:
                     continue
@@ -154,94 +159,112 @@ def parse_pdf(file_path):
                     })
                 elif qty_val in ["Grass", "Shrub", "Tree", "Conifer"]:
                     current_category = qty_val
+                    
+    # 💡 核心兜底逻辑：如果 PDF 提取不出文字（说明是照片转的假 PDF）
+    if is_pure_image or not items:
+        print("⚠️ 检测到该 PDF 可能是纯图片/扫描件，正在启动‘假PDF转图’并调用 OCR 识别...")
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    temp_img_path = f"{file_path}_page_{i}.png"
+                    # 将 PDF 页面转换为图片保存
+                    page.to_image(resolution=200).original.save(temp_img_path)
+                    # 递交给 OCR 解析
+                    ocr_items = parse_image(temp_img_path)
+                    items.extend(ocr_items)
+                    if os.path.exists(temp_img_path):
+                        os.remove(temp_img_path)
+        except Exception as e:
+            print(f"❌ 假 PDF 转换或识别失败: {e}")
+            
     return items
 
 def parse_image(file_path):
-    """【解析图片】使用 PaddleOCR 物理行对齐解析"""
+    """【解析图片】使用 EasyOCR 精准提取文字行并匹配报价"""
     global ocr
     if ocr is None:
-        ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+        # 初始化 EasyOCR 识别器，指定支持英文（苗圃报价单主要都是英文和数字）
+        ocr = easyocr.Reader(['en'])
         
-    print(f"🖼️ 正在通过 OCR 解析图片报价单: {file_path}")
-    result = ocr.ocr(file_path, cls=True)
+    print(f"🖼️ 正在通过 EasyOCR 解析图片/扫描件报价单: {file_path}")
     
-    lines = []
-    for idx in range(len(result)):
-        res = result[idx]
-        if not res: continue
-        for line in res:
-            box = line[0]
-            text = line[1][0]
-            y_center = (box[0][1] + box[2][1]) / 2.0
-            x_start = box[0][0]
-            lines.append({"text": text, "x": x_start, "y": y_center})
-
-    lines.sort(key=lambda item: item["y"])
-    grouped_rows = []
-    current_row = []
-    last_y = -999
-    
-    for line in lines:
-        if last_y == -999 or abs(line["y"] - last_y) < 15:
-            current_row.append(line)
-        else:
-            current_row.sort(key=lambda item: item["x"])
-            grouped_rows.append(current_row)
-            current_row = [line]
-        last_y = line["y"]
-    if current_row:
-        current_row.sort(key=lambda item: item["x"])
-        grouped_rows.append(current_row)
+    try:
+        # EasyOCR 帮我们按行合并对齐文本，返回纯文本行列表
+        result = ocr.readtext(file_path, detail=0)
+        print("OCR 原始识别文字行:", result)
+    except Exception as e:
+        print(f"❌ OCR 引擎识别失败: {e}")
+        return []
 
     items = []
     current_category = "Shrub"
-    for row in grouped_rows:
-        row_text = [item["text"].strip() for item in row]
-        if len(row_text) == 1 and row_text[0] in ["Grass", "Shrub", "Tree", "Conifer"]:
-            current_category = row_text[0]
+    
+    # 遍历所有文字行，寻找以数字（订购数量）开头的报价线索
+    for i, text in enumerate(result):
+        text_str = text.strip()
+        
+        # 类别切换自动识别
+        if text_str in ["Grass", "Shrub", "Tree", "Conifer"]:
+            current_category = text_str
             continue
             
-        if len(row_text) >= 4:
-            first_val = row_text[0]
-            if first_val.isdigit() and int(first_val) < 1000:
-                ordered = int(first_val)
-                prices = []
-                for val in row_text:
-                    cleaned = val.replace('$', '').replace(',', '').strip()
-                    if re.match(r'^\d+\.\d{2}$', cleaned):
-                        prices.append(float(cleaned))
+        # 匹配数量开头，比如 "33 Carex morrowii" 或者单独的数字 "33"
+        match_qty = re.match(r'^(\d+)\s*(.*)', text_str)
+        if match_qty:
+            ordered = int(match_qty.group(1))
+            if ordered >= 1000:  # 排除掉年份或电话号码干扰
+                continue
                 
-                size = "N/A"
-                for val in row_text:
-                    if '#' in val or 'gal' in val.lower():
-                        size = val
-                
-                botanical_parts = []
-                for val in row_text[1:]:
-                    if val == size or (prices and val.replace('$', '').strip() == f"{prices[0]:.2f}"):
+            rest_text = match_qty.group(2).strip()
+            
+            # 如果这一行只有数字，植物名字在换行位置，我们向后拉取 3 行合并分析
+            lookahead_parts = [rest_text] if rest_text else []
+            for offset in range(1, 4):
+                if i + offset < len(result):
+                    next_line = result[i + offset].strip()
+                    # 如果下一行又是单独的非价格数字开头，说明进入新的植物行了，停止截取
+                    if re.match(r'^\d+', next_line) and not re.match(r'^\d+\.\d{2}', next_line):
                         break
-                    botanical_parts.append(val)
-                botanical_name = " ".join(botanical_parts)
-
-                if "Total" in botanical_name or ordered == 166:
-                    continue
-
-                if len(prices) >= 2:
-                    net_price = prices[-2]
-                    extension = prices[-1]
-                else:
-                    net_price = prices[0] if prices else 0.0
-                    extension = ordered * net_price
-
-                if botanical_name:
-                    items.append({
-                        "category": current_category,
-                        "ordered": ordered,
-                        "botanical_name": botanical_name,
-                        "size": size,
-                        "net_price": net_price,
-                        "extension": extension
-                    })
+                    lookahead_parts.append(next_line)
+            
+            combined_text = " ".join(lookahead_parts)
+            
+            # 提取价格（寻找类似于 8.50, 12.95 这样的浮点数）
+            prices = [float(p) for p in re.findall(r'\d+\.\d{2}', combined_text)]
+            
+            # 提取尺寸规格（寻找类似于 #1, #2, 2gal 这样的关键规格）
+            size_match = re.search(r'(#\d|\d+gal)', combined_text, re.IGNORECASE)
+            size = size_match.group(1) if size_match else "N/A"
+            
+            # 提取植物名称：从合并文本中把数量、价格、尺寸符号剔除，剩下的就是纯植物名
+            botanical_name = combined_text
+            if size != "N/A":
+                botanical_name = botanical_name.replace(size, "")
+            for p in prices:
+                botanical_name = botanical_name.replace(f"{p:.2f}", "").replace(str(p), "")
+            
+            botanical_name = re.sub(r'[\$\,\#]', '', botanical_name).strip()
+            
+            if "total" in botanical_name.lower() or not botanical_name:
+                continue
+                
+            # 计算最终价格
+            if len(prices) >= 2:
+                net_price = prices[-2]
+                extension = prices[-1]
+            else:
+                net_price = prices[0] if prices else 0.0
+                extension = ordered * net_price
+                
+            items.append({
+                "category": current_category,
+                "ordered": ordered,
+                "botanical_name": botanical_name,
+                "size": size,
+                "net_price": net_price,
+                "extension": extension
+            })
+            
     return items
 
 # ==================== 4. 邮件收取与调度 ====================
@@ -310,7 +333,7 @@ def process_emails_and_save():
                             ext = os.path.splitext(filename)[1].lower()
                             items = []
                             
-                            # 格式自动分流
+                            # 格式自适应多轨分流
                             if ext in ['.xlsx', '.xls']:
                                 items = parse_excel(file_path)
                             elif ext == '.pdf':
@@ -329,7 +352,7 @@ def process_emails_and_save():
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 '''
                                 records = [
-                                    (supplier_name, "AUTO_IMPORT", "2026-07-17", 
+                                    (supplier_name, "AUTO_IMPORT", "2026-07-18", 
                                      i["category"], i["ordered"], i["botanical_name"], i["size"], i["net_price"], i["extension"], filename)
                                     for i in items
                                 ]
@@ -337,7 +360,7 @@ def process_emails_and_save():
                                 conn.commit()
                                 print(f"💾 成功将 {len(records)} 行数据存入统一数据库！")
                                 
-                                # 【关键修改：入库后立刻驱动 JSON 同步】
+                                # 入库后立刻驱动 JSON 同步更新前端大屏
                                 sync_db_to_json()
                             
                             if os.path.exists(file_path):
@@ -357,7 +380,7 @@ def process_emails_and_save():
 
 if __name__ == "__main__":
     process_emails_and_save()
-    # 【追加：安全兜底，整个流水线跑完后再全量校准一次 JSON】
+    # 安全兜底，整个流水线跑完后再全量校准一次 JSON
     try:
         sync_db_to_json()
     except Exception:
